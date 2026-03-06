@@ -4,7 +4,7 @@ lua54 "yes"
 
 author "Forge Group Developer"
 description "FGD Multi-Framework Integration Library"
-version "1.0.0"
+version "1.0.1"
 
 shared_scripts {
   "config.lua",
@@ -38,3 +38,4 @@ server_exports {
 escrow_ignore {
   "config.lua"
 }
+
