@@ -15,9 +15,16 @@ local function extractRemoteVersion(body)
   raw = raw:gsub("^%s+", ""):gsub("%s+$", "")
   if raw == "" then return nil end
 
+  -- Se recebeu HTML, provavelmente a URL nao e raw do arquivo.
+  local lowerRaw = raw:lower()
+  if lowerRaw:find("<!doctype html", 1, true) or lowerRaw:find("<html", 1, true) then
+    return nil
+  end
+
   -- Suporte a leitura direta do fxmanifest.lua (ex.: version "1.0.1")
   local fromFxManifest = raw:match("[\n\r]%s*version%s+[\"']([^\"']+)[\"']")
     or raw:match("^%s*version%s+[\"']([^\"']+)[\"']")
+    or raw:match("version%s+[\"']([^\"']+)[\"']")
   if fromFxManifest and fromFxManifest ~= "" then
     return normalizeVersion(fromFxManifest)
   end
@@ -34,6 +41,11 @@ local function extractRemoteVersion(body)
 
   -- Se vier texto puro, usa a primeira linha.
   local firstLine = raw:match("([^\r\n]+)") or raw
+  local fromSemver = raw:match("([vV]?%d+%.%d+%.%d+)") or firstLine:match("([vV]?%d+%.%d+%.%d+)")
+  if fromSemver then
+    return normalizeVersion(fromSemver)
+  end
+
   return normalizeVersion(firstLine)
 end
 
@@ -76,6 +88,14 @@ local function checkForUpdates()
   end
 
   local url = tostring(vcfg.Url or ""):gsub("^%s+", ""):gsub("%s+$", "")
+
+  -- Normaliza links comuns do GitHub para formato raw.
+  url = url:gsub("/refs/heads/", "/")
+  local ghUser, ghRepo, ghBranch, ghPath = url:match("https://github%.com/([^/]+)/([^/]+)/blob/([^/]+)/(.+)")
+  if ghUser and ghRepo and ghBranch and ghPath then
+    url = ("https://raw.githubusercontent.com/%s/%s/%s/%s"):format(ghUser, ghRepo, ghBranch, ghPath)
+  end
+
   if url == "" or url:find("SEU_USUARIO", 1, true) then
     print("^3[fgd_lib]^7 VersionCheck ativo, mas URL nao configurada em config.lua")
     return
@@ -83,33 +103,50 @@ local function checkForUpdates()
 
   local localVersion = normalizeVersion(GetResourceMetadata(GetCurrentResourceName(), "version", 0) or "0.0.0")
 
-  PerformHttpRequest(url, function(statusCode, body)
-    if statusCode ~= 200 then
-      print(("^3[fgd_lib]^7 Nao foi possivel verificar atualizacao (HTTP %s)"):format(tostring(statusCode)))
-      return
-    end
+  local triedFallback = false
+  local function requestVersion(requestUrl)
+    PerformHttpRequest(requestUrl, function(statusCode, body)
+      if statusCode == 404 and not triedFallback then
+        triedFallback = true
 
-    local remoteVersion = extractRemoteVersion(body)
-    if not remoteVersion or remoteVersion == "" then
-      print("^3[fgd_lib]^7 Falha ao ler versao remota")
-      return
-    end
+        -- Fallback comum quando o repositorio tem a pasta fgd_lib/ na raiz.
+        local candidate = requestUrl:gsub("/fxmanifest%.lua$", "/fgd_lib/fxmanifest.lua")
+        if candidate ~= requestUrl then
+          print(("^3[fgd_lib]^7 URL 404, tentando fallback: %s"):format(candidate))
+          requestVersion(candidate)
+          return
+        end
+      end
 
-    local cmp = compareVersions(localVersion, remoteVersion)
-    if cmp < 0 then
-      print(("^1[fgd_lib]^7 Versao desatualizada. Local: ^3%s^7 | Github: ^2%s^7"):format(localVersion, remoteVersion))
-      print("^3[fgd_lib]^7 Atualize o recurso para evitar incompatibilidades.")
-      return
-    end
+      if statusCode ~= 200 then
+        print(("^3[fgd_lib]^7 Nao foi possivel verificar atualizacao (HTTP %s) | URL: %s"):format(tostring(statusCode), requestUrl))
+        return
+      end
 
-    if cmp == 0 then
-      print(("^2[fgd_lib]^7 Versao atualizada: ^3%s^7"):format(localVersion))
-      return
-    end
+      local remoteVersion = extractRemoteVersion(body)
+      if not remoteVersion or remoteVersion == "" then
+        print(("^3[fgd_lib]^7 Falha ao ler versao remota. Verifique o RAW do fxmanifest.lua | URL: %s"):format(requestUrl))
+        return
+      end
 
-    -- Local maior que remoto (build de dev/local)
-    print(("^2[fgd_lib]^7 Versao local (%s) acima da remota (%s)"):format(localVersion, remoteVersion))
-  end, "GET", "", { ["Accept"] = "application/json, text/plain" })
+      local cmp = compareVersions(localVersion, remoteVersion)
+      if cmp < 0 then
+        print(("^1[fgd_lib]^7 Versao desatualizada. Local: ^3%s^7 | Github: ^2%s^7"):format(localVersion, remoteVersion))
+        print("^3[fgd_lib]^7 Atualize o recurso para evitar incompatibilidades.")
+        return
+      end
+
+      if cmp == 0 then
+        print(("^2[fgd_lib]^7 Versao atualizada: ^3%s^7"):format(localVersion))
+        return
+      end
+
+      -- Local maior que remoto (build de dev/local)
+      print(("^2[fgd_lib]^7 Versao local (%s) acima da remota (%s)"):format(localVersion, remoteVersion))
+    end, "GET", "", { ["Accept"] = "application/json, text/plain" })
+  end
+
+  requestVersion(url)
 end
 
 local function printFrameworkStatusServer(framework)
@@ -233,6 +270,53 @@ function GetPlayerId(src)
     if vRP then
       local passport = callAny(vRP, { "Passport", "getUserId" }, src)
       if passport then return passport end
+    end
+  end
+
+  -- Fallbacks centralizados para cenarios onde a deteccao de framework falha
+  -- temporariamente (start order/resource custom), mas o jogador ja esta carregado.
+  local qbPlayer = getQBPlayer(src)
+  if qbPlayer and qbPlayer.PlayerData then
+    local qbId = qbPlayer.PlayerData.citizenid or qbPlayer.PlayerData.license
+    if qbId then
+      return qbId
+    end
+  end
+
+  local vRP = getVRP()
+  if vRP then
+    local passport = callAny(vRP, { "Passport", "getUserId" }, src)
+    if passport then
+      return passport
+    end
+  end
+
+  local player = Player(src)
+  if player and player.state then
+    local keys = {
+      "id",
+      "Id",
+      "charid",
+      "CharId",
+      "passport",
+      "Passport",
+      "user_id",
+      "userId",
+      "UserId",
+      "char_id",
+      "character_id",
+      "characterId",
+      "citizenid",
+      "citizenId",
+      "CitizenId",
+      "license"
+    }
+
+    for _, key in ipairs(keys) do
+      local value = player.state[key]
+      if value ~= nil and tostring(value) ~= "" then
+        return value
+      end
     end
   end
 
