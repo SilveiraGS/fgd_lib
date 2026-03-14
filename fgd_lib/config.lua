@@ -12,4 +12,8 @@ FGDConfig = {
   },
 
   Debug = false
+
+  -- Debug especifico para diagnosticar mapeamento de colunas da tabela `characters`.
+  -- Quando true, imprime no console quais colunas foram detectadas automaticamente.
+  CharacterSchemaDebug = false
 }

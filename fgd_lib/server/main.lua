@@ -394,6 +394,19 @@ local function trimText(value)
   return tostring(value or ""):gsub("^%s+", ""):gsub("%s+$", "")
 end
 
+local function isCharacterSchemaDebugEnabled()
+  local cfg = FGDConfig or {}
+  return cfg.CharacterSchemaDebug == true
+end
+
+local function characterSchemaDebug(message)
+  if not isCharacterSchemaDebugEnabled() then
+    return
+  end
+
+  print(("^3[fgd_lib:characters]^7 %s"):format(tostring(message or "")))
+end
+
 local TABLE_EXISTS_CACHE = {}
 
 local function queryRowsDb(query, params)
@@ -445,6 +458,173 @@ local function hasTable(tableName)
   local exists = type(rows) == "table" and rows[1] ~= nil
   TABLE_EXISTS_CACHE[key] = exists
   return exists
+end
+
+local CHARACTERS_SCHEMA_CACHE = nil
+
+local function pickSchemaColumn(byLower, candidates)
+  for _, candidate in ipairs(candidates or {}) do
+    local found = byLower[string.lower(tostring(candidate))]
+    if found then
+      return found
+    end
+  end
+
+  return nil
+end
+
+local function getCharactersSchema()
+  if CHARACTERS_SCHEMA_CACHE ~= nil then
+    return CHARACTERS_SCHEMA_CACHE
+  end
+
+  if not hasTable("characters") then
+    characterSchemaDebug("Tabela `characters` nao encontrada no banco atual.")
+    CHARACTERS_SCHEMA_CACHE = false
+    return nil
+  end
+
+  local rows = queryRowsDb("SHOW COLUMNS FROM `characters`", {})
+  if type(rows) ~= "table" or #rows == 0 then
+    characterSchemaDebug("Nao foi possivel ler colunas de `characters` (SHOW COLUMNS retornou vazio).")
+    CHARACTERS_SCHEMA_CACHE = false
+    return nil
+  end
+
+  local byLower = {}
+  for _, row in ipairs(rows) do
+    local field = trimText(row and row.Field)
+    if field ~= "" then
+      byLower[string.lower(field)] = field
+    end
+  end
+
+  local schema = {
+    idCol = pickSchemaColumn(byLower, { "id", "passport", "Passport", "user_id", "userid", "citizenid", "citizen_id" }),
+    firstNameCol = pickSchemaColumn(byLower, { "Name", "name", "firstname", "first_name", "nome" }),
+    lastNameCol = pickSchemaColumn(byLower, { "Lastname", "lastname", "name2", "last_name", "surname", "sobrenome" }),
+    skinCol = pickSchemaColumn(byLower, { "Skin", "skin", "Ped", "ped", "model" }),
+    sexCol = pickSchemaColumn(byLower, { "sex", "Sex", "sexo", "Sexo" })
+  }
+
+  if not schema.idCol then
+    characterSchemaDebug("Falha ao mapear schema de `characters`: coluna de ID nao encontrada.")
+    CHARACTERS_SCHEMA_CACHE = false
+    return nil
+  end
+
+  characterSchemaDebug((
+    "Schema detectado | id=%s | firstname=%s | lastname=%s | skin=%s | sex=%s"
+  ):format(
+    tostring(schema.idCol or "nil"),
+    tostring(schema.firstNameCol or "nil"),
+    tostring(schema.lastNameCol or "nil"),
+    tostring(schema.skinCol or "nil"),
+    tostring(schema.sexCol or "nil")
+  ))
+
+  CHARACTERS_SCHEMA_CACHE = schema
+  return schema
+end
+
+local function mapCharacterSchemaRow(row)
+  if type(row) ~= "table" then
+    return nil
+  end
+
+  local id = trimText(row.id)
+  if id == "" then
+    return nil
+  end
+
+  local firstname = trimText(row.firstname)
+  local lastname = trimText(row.lastname)
+  local full = ((firstname or "") .. " " .. (lastname or "")):gsub("^%s+", ""):gsub("%s+$", "")
+
+  return {
+    id = id,
+    firstname = firstname,
+    lastname = lastname,
+    fullname = full,
+    skin = trimText(row.skin),
+    sex = trimText(row.sex)
+  }
+end
+
+local function queryCharacterByIdFlexible(characterId)
+  local schema = getCharactersSchema()
+  if not schema then
+    return nil
+  end
+
+  local idValue = trimText(characterId)
+  if idValue == "" then
+    return nil
+  end
+
+  local firstExpr = schema.firstNameCol and ("`" .. schema.firstNameCol .. "`") or "''"
+  local lastExpr = schema.lastNameCol and ("`" .. schema.lastNameCol .. "`") or "''"
+  local skinExpr = schema.skinCol and ("`" .. schema.skinCol .. "`") or "''"
+  local sexExpr = schema.sexCol and ("`" .. schema.sexCol .. "`") or "''"
+
+  local query = ([[
+    SELECT `%s` AS id, %s AS firstname, %s AS lastname, %s AS skin, %s AS sex
+    FROM `characters`
+    WHERE `%s` = ?
+    LIMIT 1
+  ]]):format(schema.idCol, firstExpr, lastExpr, skinExpr, sexExpr, schema.idCol)
+
+  local row = querySingle(query, { idValue })
+  return mapCharacterSchemaRow(row)
+end
+
+local function queryCharacterByNameFlexible(firstname, lastname)
+  local schema = getCharactersSchema()
+  if not schema or not schema.firstNameCol then
+    return nil
+  end
+
+  local first = trimText(firstname)
+  local last = trimText(lastname)
+  if first == "" then
+    return nil
+  end
+
+  local firstExpr = "`" .. schema.firstNameCol .. "`"
+  local lastExpr = schema.lastNameCol and ("`" .. schema.lastNameCol .. "`") or "''"
+  local skinExpr = schema.skinCol and ("`" .. schema.skinCol .. "`") or "''"
+  local sexExpr = schema.sexCol and ("`" .. schema.sexCol .. "`") or "''"
+
+  local row = nil
+  if schema.lastNameCol and last ~= "" then
+    local queryFull = ([[
+      SELECT `%s` AS id, %s AS firstname, %s AS lastname, %s AS skin, %s AS sex
+      FROM `characters`
+      WHERE `%s` = ? AND `%s` = ?
+      LIMIT 1
+    ]]):format(schema.idCol, firstExpr, lastExpr, skinExpr, sexExpr, schema.firstNameCol, schema.lastNameCol)
+    row = querySingle(queryFull, { first, last })
+  end
+
+  if not row then
+    local queryFirst = ([[
+      SELECT `%s` AS id, %s AS firstname, %s AS lastname, %s AS skin, %s AS sex
+      FROM `characters`
+      WHERE `%s` = ?
+      LIMIT 1
+    ]]):format(schema.idCol, firstExpr, lastExpr, skinExpr, sexExpr, schema.firstNameCol)
+    row = querySingle(queryFirst, { first })
+  end
+
+  return mapCharacterSchemaRow(row)
+end
+
+function GetCharacterByPlayerId(playerId)
+  return queryCharacterByIdFlexible(playerId)
+end
+
+function FindCharacterByName(firstname, lastname)
+  return queryCharacterByNameFlexible(firstname, lastname)
 end
 
 local function mapVehicleRows(ownerId, rows, mapper)
@@ -804,24 +984,46 @@ function GetPlayerIdentity(src)
 
   if fw == "creative" then
     local vRP = getVRP()
-    if not vRP or not playerId then
-      return nil
+    if vRP and playerId then
+      local identity = callAny(vRP, { "Identity", "getUserIdentity" }, playerId)
+      if type(identity) == "table" then
+        local firstname = identity.name or identity.firstname or identity.Name or ""
+        local lastname = identity.name2 or identity.lastname or identity.Lastname or ""
+        local fullname = tostring(identity.fullname or identity.Fullname or "")
+        if fullname == "" then
+          fullname = ((firstname or "") .. " " .. (lastname or "")):gsub("^%s+", ""):gsub("%s+$", "")
+        end
+
+        return {
+          id = playerId,
+          firstname = firstname,
+          lastname = lastname,
+          fullname = fullname
+        }
+      end
     end
 
-    local identity = callAny(vRP, { "Identity", "getUserIdentity" }, playerId)
-    if type(identity) == "table" then
-      local firstname = identity.name or identity.firstname or identity.Name or ""
-      local lastname = identity.name2 or identity.lastname or identity.Lastname or ""
-      local fullname = tostring(identity.fullname or identity.Fullname or "")
-      if fullname == "" then
-        fullname = ((firstname or "") .. " " .. (lastname or "")):gsub("^%s+", ""):gsub("%s+$", "")
+    if playerId then
+      local row = queryCharacterByIdFlexible(playerId)
+      if row then
+        return {
+          id = row.id,
+          firstname = row.firstname,
+          lastname = row.lastname,
+          fullname = row.fullname
+        }
       end
+    end
+  end
 
+  if playerId then
+    local row = queryCharacterByIdFlexible(playerId)
+    if row then
       return {
-        id = playerId,
-        firstname = firstname,
-        lastname = lastname,
-        fullname = fullname
+        id = row.id,
+        firstname = row.firstname,
+        lastname = row.lastname,
+        fullname = row.fullname
       }
     end
   end
@@ -1396,6 +1598,8 @@ exports("GetFramework", GetFramework)
 exports("GetPlayerId", GetPlayerId)
 exports("GetPlayerIdentity", GetPlayerIdentity)
 exports("GetPlayerName", GetPlayerName)
+exports("GetCharacterByPlayerId", GetCharacterByPlayerId)
+exports("FindCharacterByName", FindCharacterByName)
 exports("GetMoney", GetMoney)
 exports("AddMoney", AddMoney)
 exports("RemoveMoney", RemoveMoney)
