@@ -8,7 +8,7 @@ FGDConfig = {
   VersionCheck = {
     Enabled = true,
   
-    Url = "https://raw.githubusercontent.com/SilveiraGS/fgd_lib/main/fxmanifest.lua"
+    Url = " https://raw.githubusercontent.com/SilveiraGS/fgd_lib/main/fgd_lib/fxmanifest.lua"
   },
 
   Debug = false

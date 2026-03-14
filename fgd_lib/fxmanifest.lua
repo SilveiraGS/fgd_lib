@@ -4,7 +4,7 @@ lua54 "yes"
 
 author "Forge Group Developer"
 description "FGD Multi-Framework Integration Library"
-version "1.0.1"
+version "1.0.3"
 
 shared_scripts {
   "config.lua",
@@ -16,12 +16,15 @@ client_scripts {
 }
 
 server_scripts {
+  "@vrp/lib/Utils.lua",
   "server/main.lua"
 }
 
 client_exports {
   "GetFramework",
-  "GetPlayerData"
+  "GetPlayerData",
+  "RegisterTargetCircle",
+  "Notify"
 }
 
 server_exports {
@@ -32,10 +35,14 @@ server_exports {
   "GetMoney",
   "AddMoney",
   "RemoveMoney",
-  "HasPermission"
+  "RemoveMoneyWithBankFallback",
+  "GetPlayerVehicles",
+  "GetVehiclesByPlayerId",
+  "GiveVehicleKeys",
+  "HasPermission",
+  "HasAnyPermission"
 }
 
 escrow_ignore {
   "config.lua"
 }
-
