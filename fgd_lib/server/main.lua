@@ -437,6 +437,15 @@ local function queryRowsDb(query, params)
   return {}
 end
 
+local function querySingle(query, params)
+  local rows = queryRowsDb(query, params)
+  if type(rows) ~= "table" then
+    return nil
+  end
+
+  return rows[1]
+end
+
 local function hasTable(tableName)
   local key = trimText(tableName)
   if key == "" then
@@ -499,8 +508,15 @@ local function getCharactersSchema()
     end
   end
 
+  local idCandidates
+  if FGD.GetFramework() == "qbcore" then
+    idCandidates = { "citizenid", "citizen_id", "id", "passport", "Passport", "user_id", "userid" }
+  else
+    idCandidates = { "id", "passport", "Passport", "user_id", "userid", "citizenid", "citizen_id" }
+  end
+
   local schema = {
-    idCol = pickSchemaColumn(byLower, { "id", "passport", "Passport", "user_id", "userid", "citizenid", "citizen_id" }),
+    idCol = pickSchemaColumn(byLower, idCandidates),
     firstNameCol = pickSchemaColumn(byLower, { "Name", "name", "firstname", "first_name", "nome" }),
     lastNameCol = pickSchemaColumn(byLower, { "Lastname", "lastname", "name2", "last_name", "surname", "sobrenome" }),
     skinCol = pickSchemaColumn(byLower, { "Skin", "skin", "Ped", "ped", "model" }),
@@ -790,6 +806,29 @@ local function getQbIdentityParts(src)
   }
 end
 
+local function getQbCitizenIdFromState(src)
+  local player = Player(src)
+  if not player or not player.state then
+    return nil
+  end
+
+  local keys = {
+    "citizenid",
+    "citizenId",
+    "CitizenId",
+    "license"
+  }
+
+  for _, key in ipairs(keys) do
+    local value = trimText(player.state[key])
+    if value ~= "" then
+      return value
+    end
+  end
+
+  return nil
+end
+
 local function toPositiveInteger(value)
   if value == nil then return nil end
 
@@ -894,6 +933,11 @@ function GetPlayerId(src)
     if citizenId and citizenId ~= "" then
       return citizenId
     end
+
+    local stateCitizenId = getQbCitizenIdFromState(src)
+    if stateCitizenId and stateCitizenId ~= "" then
+      return stateCitizenId
+    end
   end
 
   if fw == "creative" then
@@ -915,6 +959,11 @@ function GetPlayerId(src)
     if qbId ~= "" then
       return qbId
     end
+
+    local stateCitizenId = getQbCitizenIdFromState(src)
+    if stateCitizenId and stateCitizenId ~= "" then
+      return stateCitizenId
+    end
   end
 
   local vRP = getVRP()
@@ -927,24 +976,35 @@ function GetPlayerId(src)
 
   local player = Player(src)
   if player and player.state then
-    local keys = {
-      "id",
-      "Id",
-      "charid",
-      "CharId",
-      "passport",
-      "Passport",
-      "user_id",
-      "userId",
-      "UserId",
-      "char_id",
-      "character_id",
-      "characterId",
-      "citizenid",
-      "citizenId",
-      "CitizenId",
-      "license"
-    }
+    local keys
+
+    if fw == "qbcore" or qbPlayer ~= nil then
+      keys = {
+        "citizenid",
+        "citizenId",
+        "CitizenId",
+        "license"
+      }
+    else
+      keys = {
+        "id",
+        "Id",
+        "charid",
+        "CharId",
+        "passport",
+        "Passport",
+        "user_id",
+        "userId",
+        "UserId",
+        "char_id",
+        "character_id",
+        "characterId",
+        "citizenid",
+        "citizenId",
+        "CitizenId",
+        "license"
+      }
+    end
 
     for _, key in ipairs(keys) do
       local value = player.state[key]
@@ -1594,6 +1654,36 @@ function GiveVehicleKeys(src, plate, vehicle)
   return false
 end
 
+function SetSpawnClient(src, model)
+  local playerSrc = tonumber(src) or 0
+  if playerSrc <= 0 then
+    return false, "invalid_source"
+  end
+
+  local modelType = type(model)
+  if model == nil or (modelType ~= "string" and modelType ~= "number") then
+    return false, "invalid_model"
+  end
+
+  if modelType == "string" and tostring(model):gsub("^%s+", ""):gsub("%s+$", "") == "" then
+    return false, "invalid_model"
+  end
+
+  if GetResourceState("PL_PROTECT") ~= "started" then
+    return false, "pl_protect_not_started"
+  end
+
+  local ok, err = pcall(function()
+    exports["PL_PROTECT"]:setSpawnClient(playerSrc, model)
+  end)
+
+  if not ok then
+    return false, tostring(err)
+  end
+
+  return true
+end
+
 exports("GetFramework", GetFramework)
 exports("GetPlayerId", GetPlayerId)
 exports("GetPlayerIdentity", GetPlayerIdentity)
@@ -1609,6 +1699,7 @@ exports("GetVehiclesByPlayerId", GetVehiclesByPlayerId)
 exports("GiveVehicleKeys", GiveVehicleKeys)
 exports("HasPermission", HasPermission)
 exports("HasAnyPermission", HasAnyPermission)
+exports("SetSpawnClient", SetSpawnClient)
 
 CreateThread(function()
   -- Aguarda um pouco para dar tempo das dependencias iniciarem e imprime o status.

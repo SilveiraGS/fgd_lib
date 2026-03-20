@@ -4,7 +4,7 @@ lua54 "yes"
 
 author "Forge Group Developer"
 description "FGD Multi-Framework Integration Library"
-version "1.0.4"
+version "1.0.5"
 
 shared_scripts {
   "config.lua",

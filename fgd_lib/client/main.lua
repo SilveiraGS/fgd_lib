@@ -169,52 +169,54 @@ function RegisterTargetCircle(zoneName, coords, radius, options)
     return true, "ox_target"
   end
 
-  local okQb, qbResult = callTargetExport("qb-target", {
-    "AddCircleZone"
-  }, nil, name, center, r, {
-      name = name,
-      useZ = true
-    }, {
-      options = {
-        {
-          type = "client",
-          event = eventName,
-          icon = icon,
-          label = label,
-          canInteract = cfg.canInteract
-        }
-      },
-      distance = distance
-    })
-  if okQb then
-    return true, "qb-target"
+  if GetResourceState("qb-target") == "started" then
+    local okQb = pcall(function()
+      exports["qb-target"]:AddCircleZone(name, center, r, {
+        name = name,
+        useZ = true
+      }, {
+        options = {
+          {
+            type = "client",
+            event = eventName,
+            icon = icon,
+            label = label,
+            canInteract = cfg.canInteract
+          }
+        },
+        distance = distance
+      })
+    end)
+    if okQb then
+      return true, "qb-target"
+    end
   end
 
-  local okLegacy, legacyResult = callTargetExport("target", {
-    "AddCircleZone"
-  }, nil, name, center, r, {
-      name = name,
-      heading = 0.0,
-      useZ = true
-    }, {
-      Distance = distance,
-      options = {
-        {
-          event = eventName,
-          label = label,
-          tunnel = "client"
+  -- Target legado (PolyZone): chamada direta via exports para evitar
+  -- que o callTargetExport tente with/without-self e passe vec3 como radius.
+  if GetResourceState("target") == "started" then
+    local okLegacy = pcall(function()
+      exports["target"]:AddCircleZone(name, center, r, {
+        name = name,
+        heading = 0.0,
+        useZ = true
+      }, {
+        Distance = distance,
+        options = {
+          {
+            event = eventName,
+            label = label,
+            tunnel = "client"
+          }
         }
-      }
-    })
-  if okLegacy then
-    return true, "target"
+      })
+    end)
+    if okLegacy then
+      return true, "target"
+    end
   end
 
-  return false, ("target_unavailable ox=%s qb=%s legacy=%s"):format(
-    tostring(oxResult),
-    tostring(qbResult),
-    tostring(legacyResult)
-  )
+  return false, ("target_unavailable ox=false qb=false legacy=pcall_failed"):format()
 end
 
 function Notify(message, color, durationMs, title)
