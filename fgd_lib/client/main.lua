@@ -48,6 +48,10 @@ function GetPlayerData()
 end
 
 local function toVec3(value)
+  if value == nil then
+    return nil
+  end
+
   local valueType = type(value)
 
   if valueType == "vector3" then
@@ -58,18 +62,25 @@ local function toVec3(value)
     return vec3(value.x + 0.0, value.y + 0.0, value.z + 0.0)
   end
 
-  if valueType ~= "table" then
+  if valueType == "table" then
+    local x = tonumber(value[1] or value.x)
+    local y = tonumber(value[2] or value.y)
+    local z = tonumber(value[3] or value.z)
+    if x and y and z then
+      return vec3(x, y, z)
+    end
     return nil
   end
 
-  local x = tonumber(value.x)
-  local y = tonumber(value.y)
-  local z = tonumber(value.z)
-  if not x or not y or not z then
-    return nil
+  -- vector3 como userdata / tipos leves: acesso .x/.y/.z pode falhar sem pcall.
+  local ok, x, y, z = pcall(function()
+    return tonumber(value.x), tonumber(value.y), tonumber(value.z)
+  end)
+  if ok and x and y and z then
+    return vec3(x, y, z)
   end
 
-  return vec3(x, y, z)
+  return nil
 end
 
 local function callTargetExport(resourceName, methodNames, options, ...)
@@ -135,11 +146,19 @@ function RegisterTargetCircle(zoneName, coords, radius, options)
   local cfg = type(options) == "table" and options or {}
   local label = tostring(cfg.label or "Interagir")
   local distance = tonumber(cfg.distance) or 2.0
-  local eventName = tostring(cfg.event or "")
+  local eventName = tostring(
+    cfg.event or cfg.Event or cfg.clientEvent or cfg.ClientEvent or ""
+  )
   local icon = tostring(cfg.icon or "fas fa-circle")
 
-  if name == "" or not center or eventName == "" then
-    return false, "invalid_params"
+  if name == "" then
+    return false, "invalid_params:name"
+  end
+  if not center then
+    return false, "invalid_params:coords"
+  end
+  if eventName == "" then
+    return false, "invalid_params:event"
   end
 
   local okOx, oxResult = callTargetExport("ox_target", {

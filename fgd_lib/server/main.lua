@@ -2,6 +2,15 @@ local cachedQBCore = nil
 local cachedVRP = nil
 local NativeGetPlayerName = _G.GetPlayerName
 local lastAnnouncedFramework = nil
+
+--- Evita natives (ex.: GET_PLAYER_NAME) com source invalido ou fora de contexto.
+local function isValidPlayerSource(src)
+  if type(src) ~= "number" then
+    return false
+  end
+  local n = math.floor(src)
+  return n >= 1
+end
 local MONEY_DEBUG = GetConvar("fgd_money_debug", "false") == "true"
 
 local function moneyDebug(message)
@@ -897,6 +906,12 @@ local function isCreativeSuccess(result)
     return result > 0
   end
 
+  if type(result) == "table" then
+    if result.success == true or result.ok == true then
+      return true
+    end
+  end
+
   return false
 end
 
@@ -926,6 +941,10 @@ function GetFramework()
 end
 
 function GetPlayerId(src)
+  if not isValidPlayerSource(src) then
+    return nil
+  end
+
   local fw = FGD.GetFramework()
 
   if fw == "qbcore" then
@@ -1018,6 +1037,10 @@ function GetPlayerId(src)
 end
 
 function GetPlayerIdentity(src)
+  if not isValidPlayerSource(src) then
+    return nil
+  end
+
   local fw = FGD.GetFramework()
   local playerId = GetPlayerId(src)
 
@@ -1047,8 +1070,13 @@ function GetPlayerIdentity(src)
     if vRP and playerId then
       local identity = callAny(vRP, { "Identity", "getUserIdentity" }, playerId)
       if type(identity) == "table" then
-        local firstname = identity.name or identity.firstname or identity.Name or ""
-        local lastname = identity.name2 or identity.lastname or identity.Lastname or ""
+        local firstname = identity.name or identity.firstname or identity.Name or identity.Nome or ""
+        local lastname = identity.name2
+          or identity.lastname
+          or identity.Lastname
+          or identity.LastName
+          or identity.sobrenome
+          or ""
         local fullname = tostring(identity.fullname or identity.Fullname or "")
         if fullname == "" then
           fullname = ((firstname or "") .. " " .. (lastname or "")):gsub("^%s+", ""):gsub("%s+$", "")
@@ -1092,13 +1120,25 @@ function GetPlayerIdentity(src)
 end
 
 function GetPlayerName(src)
+  if not isValidPlayerSource(src) then
+    return nil
+  end
+
   local identity = GetPlayerIdentity(src)
   if identity and identity.fullname and identity.fullname ~= "" then
     return identity.fullname
   end
 
   if type(NativeGetPlayerName) == "function" then
-    return NativeGetPlayerName(src)
+    local ok, name = pcall(function()
+      return NativeGetPlayerName(src)
+    end)
+    if ok and type(name) == "string" then
+      name = name:gsub("^%s+", ""):gsub("%s+$", "")
+      if name ~= "" then
+        return name
+      end
+    end
   end
 
   return nil
@@ -1195,6 +1235,10 @@ local function callQbxMoney(methodName, ...)
 end
 
 function GetMoney(src, account)
+  if not isValidPlayerSource(src) then
+    return 0
+  end
+
   local fw = FGD.GetFramework()
   local acc = tostring(account or "cash"):lower()
 
@@ -1228,6 +1272,10 @@ function GetMoney(src, account)
 end
 
 function AddMoney(src, account, amount, reason)
+  if not isValidPlayerSource(src) then
+    return false
+  end
+
   local fw = FGD.GetFramework()
   local acc = tostring(account or "cash"):lower()
   local value = tonumber(amount) or 0
@@ -1263,7 +1311,43 @@ function AddMoney(src, account, amount, reason)
   return false
 end
 
+--- Debito em Creative/VRP (carteira e/ou banco, conforme money.lua da base).
+local function removeMoneyCreativeVrp(vRP, src, acc, value)
+  if not vRP then
+    return false
+  end
+
+  local accNorm = tostring(acc or "cash"):lower()
+  local playerId = resolveCreativePassport(src, vRP)
+  if not playerId then
+    moneyDebug(("RemoveMoney creative src=%s acc=%s amount=%s -> playerId invalido"):format(tostring(src), tostring(accNorm), tostring(value)))
+    return false
+  end
+
+  if accNorm == "bank" then
+    if tryAnyCreativeSuccess(vRP, { "PaymentFull", "tryFullPayment" }, playerId, value, false) then
+      moneyDebug(("RemoveMoney creative PaymentFull src=%s passport=%s amount=%s"):format(tostring(src), tostring(playerId), tostring(value)))
+      return true
+    end
+    if tryAnyCreativeSuccess(vRP, { "PaymentBank", "WithdrawBank", "tryWithdraw", "RemoveBank" }, playerId, value, false) then
+      moneyDebug(("RemoveMoney creative BANK(3) src=%s passport=%s amount=%s"):format(tostring(src), tostring(playerId), tostring(value)))
+      return true
+    end
+    local okBank2 = tryAnyCreativeSuccess(vRP, { "PaymentBank", "WithdrawBank", "tryWithdraw", "RemoveBank" }, playerId, value)
+    moneyDebug(("RemoveMoney creative BANK(2) src=%s passport=%s amount=%s result=%s"):format(tostring(src), tostring(playerId), tostring(value), tostring(okBank2)))
+    return okBank2
+  end
+
+  local ok = tryAnyCreativeSuccess(vRP, { "Payment", "tryPayment", "TakeItem" }, playerId, value)
+  moneyDebug(("RemoveMoney creative CASH src=%s passport=%s amount=%s result=%s"):format(tostring(src), tostring(playerId), tostring(value), tostring(ok)))
+  return ok
+end
+
 function RemoveMoney(src, account, amount, reason)
+  if not isValidPlayerSource(src) then
+    return false
+  end
+
   local fw = FGD.GetFramework()
   local acc = tostring(account or "cash"):lower()
   local value = tonumber(amount) or 0
@@ -1282,31 +1366,22 @@ function RemoveMoney(src, account, amount, reason)
     end
   end
 
-  if fw == "creative" then
-    local vRP = getVRP()
-    if not vRP then return false end
-
-    local playerId = resolveCreativePassport(src, vRP)
-    if not playerId then
-      moneyDebug(("RemoveMoney creative src=%s acc=%s amount=%s -> playerId invalido"):format(tostring(src), tostring(acc), tostring(value)))
+  local vRP = getVRP()
+  if fw == "creative" or (fw ~= "qbcore" and vRP) then
+    if not vRP then
       return false
     end
-
-    if acc == "bank" then
-      local ok = tryAnyCreativeSuccess(vRP, { "PaymentBank", "WithdrawBank", "tryWithdraw", "RemoveBank" }, playerId, value, false)
-      moneyDebug(("RemoveMoney creative BANK src=%s passport=%s amount=%s result=%s"):format(tostring(src), tostring(playerId), tostring(value), tostring(ok)))
-      return ok
-    end
-
-    local ok = tryAnyCreativeSuccess(vRP, { "Payment", "tryPayment", "TakeItem" }, playerId, value)
-    moneyDebug(("RemoveMoney creative CASH src=%s passport=%s amount=%s result=%s"):format(tostring(src), tostring(playerId), tostring(value), tostring(ok)))
-    return ok
+    return removeMoneyCreativeVrp(vRP, src, acc, value)
   end
 
   return false
 end
 
 function RemoveMoneyWithBankFallback(src, amount, reason)
+  if not isValidPlayerSource(src) then
+    return false
+  end
+
   local fw = FGD.GetFramework()
   local value = tonumber(amount) or 0
   if value <= 0 then return false end
@@ -1402,8 +1477,8 @@ function RemoveMoneyWithBankFallback(src, amount, reason)
     return true
   end
 
-  if fw == "creative" then
-    local vRP = getVRP()
+  local vRP = getVRP()
+  if fw == "creative" or (fw ~= "qbcore" and vRP) then
     if not vRP then
       moneyDebug(("Fallback creative src=%s amount=%s -> vRP indisponivel"):format(tostring(src), tostring(value)))
       return false
@@ -1440,6 +1515,9 @@ function RemoveMoneyWithBankFallback(src, amount, reason)
     end
 
     local bankOk = tryAnyCreativeSuccess(vRP, { "PaymentBank", "WithdrawBank", "tryWithdraw", "RemoveBank" }, playerId, value, false)
+    if not bankOk then
+      bankOk = tryAnyCreativeSuccess(vRP, { "PaymentBank", "WithdrawBank", "tryWithdraw", "RemoveBank" }, playerId, value)
+    end
     moneyDebug(("Fallback creative PaymentBank src=%s passport=%s amount=%s result=%s"):format(tostring(src), tostring(playerId), tostring(value), tostring(bankOk)))
     return bankOk
   end
@@ -1684,8 +1762,55 @@ function SetSpawnClient(src, model)
   return true
 end
 
+function PaymentGems(src, amount)
+  if not isValidPlayerSource(src) then
+    return false
+  end
+
+  local value = tonumber(amount) or 0
+  if value <= 0 then return false end
+
+  local fw = FGD.GetFramework()
+  local vRP = getVRP()
+
+  if (fw == "creative" or (fw ~= "qbcore" and vRP)) and vRP then
+    local passport = resolveCreativePassport(src, vRP)
+    if not passport then return false end
+
+    local methods = {
+      "PaymentGems",
+      "paymentGems",
+      "TryPaymentGems",
+      "tryPaymentGems",
+      "PaymentGem"
+    }
+
+    for _, methodName in ipairs(methods) do
+      local fn = vRP[methodName]
+      if type(fn) == "function" then
+        local ok, result = pcall(function()
+          return fn(passport, value)
+        end)
+        if ok and isCreativeSuccess(result) then
+          return true
+        end
+
+        ok, result = pcall(function()
+          return fn(vRP, passport, value)
+        end)
+        if ok and isCreativeSuccess(result) then
+          return true
+        end
+      end
+    end
+  end
+
+  return false
+end
+
 exports("GetFramework", GetFramework)
 exports("GetPlayerId", GetPlayerId)
+exports("PaymentGems", PaymentGems)
 exports("GetPlayerIdentity", GetPlayerIdentity)
 exports("GetPlayerName", GetPlayerName)
 exports("GetCharacterByPlayerId", GetCharacterByPlayerId)
